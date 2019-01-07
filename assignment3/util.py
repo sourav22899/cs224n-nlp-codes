@@ -8,10 +8,15 @@ Arun Chaganty <chaganty@stanford.edu>
 
 from __future__ import division
 
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+
 import sys
 import time
 import logging
-import StringIO
+# import StringIO
 from collections import defaultdict, Counter, OrderedDict
 import numpy as np
 from numpy import array, zeros, allclose
