@@ -7,6 +7,7 @@ Q2: Recurrent neural nets for NER
 from __future__ import absolute_import
 from __future__ import division
 
+import os
 import argparse
 import logging
 import sys
@@ -103,7 +104,18 @@ def pad_sequences(data, max_length):
 
     for sentence, labels in data:
         ### YOUR CODE HERE (~4-6 lines)
-        pass
+        sent_copy = sentence.copy()
+        if len(sent_copy) >= max_length:
+            sent_copy = sentence[:max_length]
+            labels_copy = labels[:max_length]
+            mask_copy = [True] * max_length
+        elif len(sent_copy) < max_length:
+            n_pad = max_length - len(sent_copy)
+            mask_copy = [True]*len(sent_copy) + [False]*n_pad
+            sent_pad = [zero_vector]*n_pad
+            sent_copy = sent_copy + sent_pad
+            labels_copy = labels + [zero_label]*n_pad
+        ret.append((sent_copy,labels_copy,mask_copy))
         ### END YOUR CODE ###
     return ret
 
@@ -141,6 +153,10 @@ class RNNModel(NERModel):
         (Don't change the variable names)
         """
         ### YOUR CODE HERE (~4-6 lines)
+        self.input_placeholder = tf.placeholder(tf.int32,shape = (None,self.max_length,self.config.n_features))
+        self.labels_placeholder = tf.placeholder(tf.int32,shape = (None,self.max_length))
+        self.mask_placeholder = tf.placeholder(tf.bool,shape = (None,self.max_length))
+        self.dropout_placeholder = tf.placeholder(tf.float32,shape = ())
         ### END YOUR CODE
 
     def create_feed_dict(self, inputs_batch, mask_batch, labels_batch=None, dropout=1):
@@ -166,6 +182,13 @@ class RNNModel(NERModel):
             feed_dict: The feed dictionary mapping from placeholders to values.
         """
         ### YOUR CODE (~6-10 lines)
+        feed_dict = {
+            self.input_placeholder : inputs_batch,
+            self.mask_placeholder : mask_batch,
+            self.dropout_placeholder : dropout
+        }
+        if labels_batch is not None:
+            feed_dict[self.labels_placeholder] = labels_batch
         ### END YOUR CODE
         return feed_dict
 
@@ -190,6 +213,9 @@ class RNNModel(NERModel):
             embeddings: tf.Tensor of shape (None, max_length, n_features*embed_size)
         """
         ### YOUR CODE HERE (~4-6 lines)
+        embedding = tf.Variable(self.pretrained_embeddings)
+        embedding_tensor = tf.nn.embedding_lookup(embedding,self.input_placeholder)
+        embeddings = tf.reshape(embedding_tensor,shape = (None,self.max_length,self.config.n_features*self.config.embed_size))
         ### END YOUR CODE
         return embeddings
 
@@ -251,16 +277,29 @@ class RNNModel(NERModel):
         # Define U and b2 as variables.
         # Initialize state as vector of zeros.
         ### YOUR CODE HERE (~4-6 lines)
+        xavier_init = tf.contrib.layers.initializer()
+        U_shape = (self.config.hidden_size,self.config.n_classes)
+        b_2_shape = (self.config.n_classes,)
+        U = tf.Variable(xavier_init(U_shape))
+        b_2 = tf.Variable(xavier_init(b_2_shape))
+        h = tf.Variable(tf.zeros((self.config.hidden_size,)))
         ### END YOUR CODE
 
         with tf.variable_scope("RNN"):
             for time_step in range(self.max_length):
                 ### YOUR CODE HERE (~6-10 lines)
-                pass
+                if time_step > 0:
+                    tf.get_variable_scope().reuse_variables()
+                o,h = cell(x,h)
+                o_drop = tf.nn.dropout(o,1-dropout_rate)
+                pred_ = tf.matmul(o_drop,U) + b_2
+                preds.append(pred_)
                 ### END YOUR CODE
 
         # Make sure to reshape @preds here.
         ### YOUR CODE HERE (~2-4 lines)
+        preds = tf.reshape(preds,self.max_length,self.config.n_classes)
+        preds = tf.stack(preds)
         ### END YOUR CODE
 
         assert preds.get_shape().as_list() == [None, self.max_length, self.config.n_classes], "predictions are not of the right shape. Expected {}, got {}".format([None, self.max_length, self.config.n_classes], preds.get_shape().as_list())
@@ -282,6 +321,8 @@ class RNNModel(NERModel):
             loss: A 0-d tensor (scalar)
         """
         ### YOUR CODE HERE (~2-4 lines)
+        pred_mask = tf.boolean_mask(preds,self.mask_placeholder)
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits = pred_mask,features = self.labels_placeholder))
         ### END YOUR CODE
         return loss
 
@@ -305,6 +346,7 @@ class RNNModel(NERModel):
             train_op: The Op for training.
         """
         ### YOUR CODE HERE (~1-2 lines)
+        train_op = tf.train.AdamOptimizer(self.config.lr).minimize(loss)
         ### END YOUR CODE
         return train_op
 
@@ -442,13 +484,13 @@ def do_train(args):
             else:
                 # Save predictions in a text file.
                 output = model.output(session, dev_raw)
-                sentences, labels, predictions = zip(*output)
+                sentences, labels, predictions = list(zip(*output))
                 predictions = [[LBLS[l] for l in preds] for preds in predictions]
-                output = zip(sentences, labels, predictions)
+                output = list(zip(sentences, labels, predictions))
 
-                with open(model.config.conll_output, 'w') as f:
+                with open(model.config.conll_output, 'wb') as f:
                     write_conll(f, output)
-                with open(model.config.eval_output, 'w') as f:
+                with open(model.config.eval_output, 'wb') as f:
                     for sentence, labels, predictions in output:
                         print_sentence(f, sentence, labels, predictions)
 
@@ -503,7 +545,7 @@ input> Germany 's representative to the European Union 's veterinary committee .
             while True:
                 # Create simple REPL
                 try:
-                    sentence = raw_input("input> ")
+                    sentence = input("input> ")
                     tokens = sentence.strip().split(" ")
                     for sentence, _, predictions in model.output(session, [(tokens, ["O"] * len(tokens))]):
                         predictions = [LBLS[l] for l in predictions]
