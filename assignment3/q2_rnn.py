@@ -28,6 +28,8 @@ logger = logging.getLogger("hw3.q2")
 logger.setLevel(logging.DEBUG)
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+
 class Config:
     """Holds model hyperparams and data information.
 
@@ -47,6 +49,8 @@ class Config:
     n_epochs = 10
     max_grad_norm = 10.
     lr = 0.001
+    tf_config = tf.ConfigProto()
+    tf_config.gpu_options.allow_growth = True
 
     def __init__(self, args):
         self.cell = args.cell
@@ -159,7 +163,7 @@ class RNNModel(NERModel):
         self.dropout_placeholder = tf.placeholder(tf.float32,shape = ())
         ### END YOUR CODE
 
-    def create_feed_dict(self, inputs_batch, mask_batch, labels_batch=None, dropout=1):
+    def create_feed_dict(self, inputs_batch, mask_batch, labels_batch=None, dropout=0):
         """Creates the feed_dict for the dependency parser.
 
         A feed_dict takes the form of:
@@ -215,7 +219,7 @@ class RNNModel(NERModel):
         ### YOUR CODE HERE (~4-6 lines)
         embedding = tf.Variable(self.pretrained_embeddings)
         embedding_tensor = tf.nn.embedding_lookup(embedding,self.input_placeholder)
-        embeddings = tf.reshape(embedding_tensor,shape = (None,self.max_length,self.config.n_features*self.config.embed_size))
+        embeddings = tf.reshape(embedding_tensor,shape = (-1,self.max_length,self.config.n_features*self.config.embed_size))
         ### END YOUR CODE
         return embeddings
 
@@ -277,12 +281,11 @@ class RNNModel(NERModel):
         # Define U and b2 as variables.
         # Initialize state as vector of zeros.
         ### YOUR CODE HERE (~4-6 lines)
-        xavier_init = tf.contrib.layers.initializer()
-        U_shape = (self.config.hidden_size,self.config.n_classes)
-        b_2_shape = (self.config.n_classes,)
-        U = tf.Variable(xavier_init(U_shape))
-        b_2 = tf.Variable(xavier_init(b_2_shape))
-        h = tf.Variable(tf.zeros((self.config.hidden_size,)))
+        U_shape = (Config.hidden_size,Config.n_classes)
+        b_2_shape = (Config.n_classes,)
+        U = tf.get_variable('U',shape = U_shape,initializer = tf.contrib.layers.xavier_initializer())
+        b_2 = tf.get_variable('b_2',shape = b_2_shape,initializer = tf.constant_initializer())
+        h = tf.zeros((tf.shape(x)[0],Config.hidden_size))
         ### END YOUR CODE
 
         with tf.variable_scope("RNN"):
@@ -290,7 +293,7 @@ class RNNModel(NERModel):
                 ### YOUR CODE HERE (~6-10 lines)
                 if time_step > 0:
                     tf.get_variable_scope().reuse_variables()
-                o,h = cell(x,h)
+                o,h = cell(x[:,time_step,:],h,scope = "RNN")
                 o_drop = tf.nn.dropout(o,1-dropout_rate)
                 pred_ = tf.matmul(o_drop,U) + b_2
                 preds.append(pred_)
@@ -298,8 +301,7 @@ class RNNModel(NERModel):
 
         # Make sure to reshape @preds here.
         ### YOUR CODE HERE (~2-4 lines)
-        preds = tf.reshape(preds,self.max_length,self.config.n_classes)
-        preds = tf.stack(preds)
+        preds = tf.stack(preds,axis = 1)
         ### END YOUR CODE
 
         assert preds.get_shape().as_list() == [None, self.max_length, self.config.n_classes], "predictions are not of the right shape. Expected {}, got {}".format([None, self.max_length, self.config.n_classes], preds.get_shape().as_list())
@@ -322,7 +324,7 @@ class RNNModel(NERModel):
         """
         ### YOUR CODE HERE (~2-4 lines)
         pred_mask = tf.boolean_mask(preds,self.mask_placeholder)
-        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits = pred_mask,features = self.labels_placeholder))
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits = pred_mask,labels = tf.boolean_mask(self.labels_placeholder,self.mask_placeholder)))
         ### END YOUR CODE
         return loss
 
@@ -444,7 +446,7 @@ def do_test2(args):
         init = tf.global_variables_initializer()
         saver = None
 
-        with tf.Session() as session:
+        with tf.Session(config = config.tf_config) as session:
             session.run(init)
             model.fit(session, saver, train, dev)
 
@@ -475,7 +477,7 @@ def do_train(args):
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
 
-        with tf.Session() as session:
+        with tf.Session(config = config.tf_config) as session:
             session.run(init)
             model.fit(session, saver, train, dev)
             if report:
@@ -488,9 +490,9 @@ def do_train(args):
                 predictions = [[LBLS[l] for l in preds] for preds in predictions]
                 output = list(zip(sentences, labels, predictions))
 
-                with open(model.config.conll_output, 'wb') as f:
+                with open(model.config.conll_output, 'w') as f:
                     write_conll(f, output)
-                with open(model.config.eval_output, 'wb') as f:
+                with open(model.config.eval_output, 'w') as f:
                     for sentence, labels, predictions in output:
                         print_sentence(f, sentence, labels, predictions)
 
@@ -511,7 +513,7 @@ def do_evaluate(args):
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
 
-        with tf.Session() as session:
+        with tf.Session(config = config.tf_config) as session:
             session.run(init)
             saver.restore(session, model.config.model_output)
             for sentence, labels, predictions in model.output(session, input_data):
@@ -533,7 +535,7 @@ def do_shell(args):
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
 
-        with tf.Session() as session:
+        with tf.Session(config = config.tf_config) as session:
             session.run(init)
             saver.restore(session, model.config.model_output)
 
